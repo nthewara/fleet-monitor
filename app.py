@@ -124,6 +124,14 @@ def api_status():
         return jsonify(health_data)
 
 
+@app.route("/api/reset", methods=["POST"])
+def reset_history():
+    with lock:
+        for name in health_data:
+            health_data[name] = init_cluster_data(name)
+    return jsonify({"status": "reset", "message": "All cluster history cleared"})
+
+
 @app.route("/api/health")
 def health():
     return jsonify({"status": "healthy"})

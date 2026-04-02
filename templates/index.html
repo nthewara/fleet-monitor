@@ -57,12 +57,17 @@
         @keyframes pulse-red { 0%,100% { box-shadow: 0 0 15px rgba(248,81,73,0.25); } 50% { box-shadow: 0 0 25px rgba(248,81,73,0.5); } }
         .live-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--green); margin-right: 4px; animation: blink 2s infinite; }
         @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+        .reset-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 0.4rem 1rem; border-radius: 6px; cursor: pointer; font-size: 0.75rem; transition: all 0.2s; display: inline-flex; align-items: center; gap: 0.4rem; }
+        .reset-btn:hover { border-color: var(--yellow); color: var(--yellow); }
+        .reset-btn:active { transform: scale(0.95); }
+        .reset-btn.resetting { border-color: var(--green); color: var(--green); pointer-events: none; }
     </style>
 </head>
 <body>
     <div class="header">
         <h1>⎈ Fleet Monitor</h1>
         <div class="subtitle"><span class="live-dot"></span>Live — Polling every {{ check_interval }}s</div>
+        <button class="reset-btn" id="resetBtn" onclick="resetHistory()" style="margin-top:0.75rem">🔄 Reset History</button>
     </div>
 
     <div class="fleet-summary" id="summary"></div>
@@ -175,6 +180,25 @@
             renderClusters(data);
         } catch(e) {
             console.error('Refresh failed:', e);
+        }
+    }
+
+    async function resetHistory() {
+        const btn = document.getElementById('resetBtn');
+        btn.classList.add('resetting');
+        btn.innerHTML = '⏳ Resetting...';
+        try {
+            await fetch('/api/reset', { method: 'POST' });
+            await refresh();
+            btn.innerHTML = '✅ Reset!';
+            setTimeout(() => {
+                btn.classList.remove('resetting');
+                btn.innerHTML = '🔄 Reset History';
+            }, 1500);
+        } catch(e) {
+            btn.classList.remove('resetting');
+            btn.innerHTML = '❌ Failed';
+            setTimeout(() => { btn.innerHTML = '🔄 Reset History'; }, 2000);
         }
     }
 
