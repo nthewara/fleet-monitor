@@ -1,5 +1,6 @@
 import os
 import time
+import socket
 import threading
 import requests
 from datetime import datetime, timezone
@@ -11,17 +12,17 @@ app = Flask(__name__)
 CLUSTERS = {}
 for key, val in os.environ.items():
     if key.startswith("CLUSTER_") and key.endswith("_URL"):
-        name = key.replace("CLUSTER_", "").replace("_URL", "").lower().replace("_", "-")
-        env_key = f"CLUSTER_{key.split('_')[1]}_ENV"
+        name_part = key.replace("CLUSTER_", "").replace("_URL", "")
+        name = name_part.lower().replace("_", "-")
+        env_key = f"CLUSTER_{name_part}_ENV"
         CLUSTERS[name] = {
             "url": val,
             "env": os.environ.get(env_key, "unknown"),
             "name": name,
         }
 
-# Health check history per cluster
-CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL", "5"))  # seconds
-MAX_HISTORY = 360  # last 30 min at 5s intervals
+CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL", "5"))
+MAX_HISTORY = 360
 
 health_data = {}
 lock = threading.Lock()
@@ -39,7 +40,7 @@ def init_cluster_data(name):
         "checks_total": 0,
         "checks_ok": 0,
         "checks_fail": 0,
-        "history": [],  # list of {ts, status, latency_ms, k8s_version, cluster_info}
+        "history": [],
         "k8s_version": "unknown",
         "node_name": "unknown",
         "pod_name": "unknown",
@@ -47,24 +48,46 @@ def init_cluster_data(name):
     }
 
 
-def check_cluster(name, info):
-    start = time.time()
+def tcp_check(host, port, timeout=2):
+    """Reliable TCP connectivity check — no HTTP overhead."""
     try:
-        resp = requests.get(f"{info['url']}/api/info", timeout=3)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        start = time.time()
+        result = sock.connect_ex((host, port))
         latency = round((time.time() - start) * 1000)
-        if resp.status_code == 200:
-            data = resp.json()
-            status = "up"
-            cluster_info = data
-        else:
-            status = "down"
-            latency = round((time.time() - start) * 1000)
-            cluster_info = {}
+        sock.close()
+        return result == 0, latency
     except Exception:
-        status = "down"
-        latency = round((time.time() - start) * 1000)
-        cluster_info = {}
+        return False, 0
 
+
+def parse_host_port(url):
+    """Extract host and port from URL."""
+    url = url.replace("http://", "").replace("https://", "")
+    if ":" in url:
+        parts = url.split(":")
+        return parts[0], int(parts[1].split("/")[0])
+    return url, 80
+
+
+def check_cluster(name, info):
+    host, port = parse_host_port(info["url"])
+
+    # Primary: TCP check (reliable, fast)
+    tcp_ok, latency = tcp_check(host, port)
+
+    # Secondary: HTTP info (best-effort, for metadata only)
+    cluster_info = {}
+    if tcp_ok:
+        try:
+            resp = requests.get(f"{info['url']}/api/info", timeout=2)
+            if resp.status_code == 200:
+                cluster_info = resp.json()
+        except Exception:
+            pass  # TCP passed, HTTP metadata is optional
+
+    status = "up" if tcp_ok else "down"
     now = datetime.now(timezone.utc).isoformat()
 
     with lock:
@@ -75,10 +98,11 @@ def check_cluster(name, info):
         d["checks_total"] += 1
         if status == "up":
             d["checks_ok"] += 1
-            d["k8s_version"] = cluster_info.get("k8s_version", d["k8s_version"])
-            d["node_name"] = cluster_info.get("node_name", d["node_name"])
-            d["pod_name"] = cluster_info.get("pod_name", d["pod_name"])
-            d["current_response"] = cluster_info
+            if cluster_info:
+                d["k8s_version"] = cluster_info.get("k8s_version", d["k8s_version"])
+                d["node_name"] = cluster_info.get("node_name", d["node_name"])
+                d["pod_name"] = cluster_info.get("pod_name", d["pod_name"])
+                d["current_response"] = cluster_info
         else:
             d["checks_fail"] += 1
 
@@ -124,12 +148,12 @@ def api_status():
         return jsonify(health_data)
 
 
-@app.route("/api/reset", methods=["POST"])
-def reset_history():
+@app.route("/api/reset")
+def api_reset():
     with lock:
         for name in health_data:
             health_data[name] = init_cluster_data(name)
-    return jsonify({"status": "reset", "message": "All cluster history cleared"})
+    return jsonify({"status": "reset"})
 
 
 @app.route("/api/health")
