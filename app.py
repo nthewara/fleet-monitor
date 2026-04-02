@@ -1,10 +1,11 @@
 import os
 import time
-import socket
 import threading
 import requests
 from datetime import datetime, timezone
 from flask import Flask, render_template, jsonify
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
@@ -27,6 +28,20 @@ MAX_HISTORY = 360
 health_data = {}
 lock = threading.Lock()
 
+# Persistent HTTP session with connection pooling — eliminates
+# DNS/TLS overhead on repeat checks and avoids stale socket issues
+http_session = requests.Session()
+http_session.mount("http://", HTTPAdapter(
+    pool_connections=10,
+    pool_maxsize=10,
+    max_retries=Retry(total=1, backoff_factor=0.1),
+))
+http_session.mount("https://", HTTPAdapter(
+    pool_connections=10,
+    pool_maxsize=10,
+    max_retries=Retry(total=1, backoff_factor=0.1),
+))
+
 
 def init_cluster_data(name):
     return {
@@ -48,46 +63,44 @@ def init_cluster_data(name):
     }
 
 
-def tcp_check(host, port, timeout=2):
-    """Reliable TCP connectivity check — no HTTP overhead."""
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        start = time.time()
-        result = sock.connect_ex((host, port))
-        latency = round((time.time() - start) * 1000)
-        sock.close()
-        return result == 0, latency
-    except Exception:
-        return False, 0
-
-
-def parse_host_port(url):
-    """Extract host and port from URL."""
-    url = url.replace("http://", "").replace("https://", "")
-    if ":" in url:
-        parts = url.split(":")
-        return parts[0], int(parts[1].split("/")[0])
-    return url, 80
-
-
 def check_cluster(name, info):
-    host, port = parse_host_port(info["url"])
-
-    # Primary: TCP check (reliable, fast)
-    tcp_ok, latency = tcp_check(host, port)
-
-    # Secondary: HTTP info (best-effort, for metadata only)
+    """HTTP health check with generous timeout and connection reuse."""
+    start = time.time()
+    status = "down"
+    latency = 0
     cluster_info = {}
-    if tcp_ok:
-        try:
-            resp = requests.get(f"{info['url']}/api/info", timeout=2)
-            if resp.status_code == 200:
-                cluster_info = resp.json()
-        except Exception:
-            pass  # TCP passed, HTTP metadata is optional
 
-    status = "up" if tcp_ok else "down"
+    try:
+        # Use /api/health — lightweight, fast, reliable
+        resp = http_session.get(
+            f"{info['url']}/api/health",
+            timeout=(3, 5),  # (connect_timeout, read_timeout)
+        )
+        latency = round((time.time() - start) * 1000)
+
+        if resp.status_code == 200:
+            status = "up"
+            # Best-effort: get metadata from /api/info (separate call, don't affect health status)
+            try:
+                info_resp = http_session.get(f"{info['url']}/api/info", timeout=(2, 3))
+                if info_resp.status_code == 200:
+                    cluster_info = info_resp.json()
+            except Exception:
+                pass
+        else:
+            status = "down"
+    except requests.exceptions.ConnectionError:
+        # Connection refused = service genuinely down
+        latency = round((time.time() - start) * 1000)
+        status = "down"
+    except requests.exceptions.Timeout:
+        # Timeout = service unresponsive, treat as down
+        latency = round((time.time() - start) * 1000)
+        status = "down"
+    except Exception:
+        latency = round((time.time() - start) * 1000)
+        status = "down"
+
     now = datetime.now(timezone.utc).isoformat()
 
     with lock:
