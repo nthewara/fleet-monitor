@@ -188,7 +188,7 @@
         btn.classList.add('resetting');
         btn.innerHTML = '⏳ Resetting...';
         try {
-            await fetch('/api/reset', { method: 'POST' });
+            await fetch('/api/reset');
             await refresh();
             btn.innerHTML = '✅ Reset!';
             setTimeout(() => {
