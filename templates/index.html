@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fleet Monitor — AKS Fleet Manager</title>
+    <style>
+        :root { --bg: #0d1117; --card: #161b22; --border: #30363d; --text: #c9d1d9; --muted: #8b949e; --green: #3fb950; --red: #f85149; --yellow: #d29922; --blue: #58a6ff; --purple: #bc8cff; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; padding: 1.5rem; }
+        .header { text-align: center; margin-bottom: 2rem; }
+        .header h1 { font-size: 1.8rem; color: var(--blue); }
+        .header .subtitle { color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; }
+        .fleet-summary { display: flex; justify-content: center; gap: 2rem; margin-bottom: 2rem; flex-wrap: wrap; }
+        .summary-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.5rem; text-align: center; min-width: 120px; }
+        .summary-card .value { font-size: 1.8rem; font-weight: 700; }
+        .summary-card .label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-top: 0.25rem; }
+        .topology { display: flex; justify-content: center; align-items: center; gap: 0; margin-bottom: 2rem; flex-wrap: wrap; }
+        .topo-node { background: var(--card); border: 2px solid var(--border); border-radius: 12px; padding: 1rem 1.25rem; text-align: center; min-width: 160px; position: relative; transition: all 0.3s; }
+        .topo-node.up { border-color: var(--green); box-shadow: 0 0 15px rgba(63,185,80,0.15); }
+        .topo-node.down { border-color: var(--red); box-shadow: 0 0 15px rgba(248,81,73,0.25); animation: pulse-red 1.5s infinite; }
+        .topo-node.unknown { border-color: var(--muted); }
+        .topo-node .env-badge { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 2rem; font-size: 0.65rem; font-weight: 700; text-transform: uppercase; margin-bottom: 0.5rem; }
+        .topo-node .env-badge.dev { background: var(--blue); color: var(--bg); }
+        .topo-node .env-badge.staging { background: var(--yellow); color: var(--bg); }
+        .topo-node .env-badge.prod { background: var(--red); color: #fff; }
+        .topo-node .cluster-name { font-size: 0.7rem; color: var(--muted); margin-bottom: 0.25rem; word-break: break-all; }
+        .topo-node .status-icon { font-size: 1.5rem; margin: 0.25rem 0; }
+        .topo-node .latency { font-size: 0.75rem; color: var(--muted); }
+        .topo-node .version { font-size: 0.7rem; color: var(--purple); margin-top: 0.25rem; }
+        .topo-arrow { color: var(--muted); font-size: 1.5rem; padding: 0 0.5rem; }
+        .topo-arrow.active { color: var(--green); }
+        .topo-hub { background: linear-gradient(135deg, #1a1a2e, #16213e); border: 2px solid var(--purple); border-radius: 12px; padding: 1rem 1.5rem; text-align: center; min-width: 140px; }
+        .topo-hub .label { color: var(--purple); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; }
+        .topo-hub .name { font-size: 0.85rem; font-weight: 600; margin-top: 0.25rem; }
+        .monitor-label { text-align: center; color: var(--muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.5rem; }
+        .clusters-detail { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; margin-bottom: 2rem; }
+        .cluster-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem; transition: border-color 0.3s; }
+        .cluster-card.up { border-left: 4px solid var(--green); }
+        .cluster-card.down { border-left: 4px solid var(--red); }
+        .cluster-card h3 { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+        .cluster-card h3 .name { font-size: 0.9rem; }
+        .cluster-card h3 .uptime { font-size: 0.8rem; padding: 0.15rem 0.5rem; border-radius: 4px; }
+        .cluster-card h3 .uptime.good { background: rgba(63,185,80,0.15); color: var(--green); }
+        .cluster-card h3 .uptime.warn { background: rgba(210,153,34,0.15); color: var(--yellow); }
+        .cluster-card h3 .uptime.bad { background: rgba(248,81,73,0.15); color: var(--red); }
+        .cluster-card .row { display: flex; justify-content: space-between; padding: 0.3rem 0; font-size: 0.8rem; }
+        .cluster-card .row .label { color: var(--muted); }
+        .timeline { height: 24px; display: flex; gap: 1px; align-items: end; margin-top: 0.75rem; border-radius: 4px; overflow: hidden; }
+        .timeline .bar { flex: 1; min-width: 2px; border-radius: 1px; transition: background 0.2s; }
+        .timeline .bar.up { background: var(--green); height: 100%; }
+        .timeline .bar.down { background: var(--red); height: 100%; }
+        .timeline .bar.unknown { background: var(--border); height: 60%; }
+        .latency-chart { height: 40px; display: flex; align-items: end; gap: 1px; margin-top: 0.5rem; }
+        .latency-chart .bar { flex: 1; min-width: 2px; background: var(--blue); border-radius: 1px 1px 0 0; opacity: 0.7; transition: height 0.2s; }
+        .footer { text-align: center; color: var(--muted); font-size: 0.7rem; margin-top: 1rem; }
+        @keyframes pulse-red { 0%,100% { box-shadow: 0 0 15px rgba(248,81,73,0.25); } 50% { box-shadow: 0 0 25px rgba(248,81,73,0.5); } }
+        .live-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--green); margin-right: 4px; animation: blink 2s infinite; }
+        @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>⎈ Fleet Monitor</h1>
+        <div class="subtitle"><span class="live-dot"></span>Live — Polling every {{ check_interval }}s</div>
+    </div>
+
+    <div class="fleet-summary" id="summary"></div>
+
+    <div class="monitor-label">Fleet Topology & Traffic Flow</div>
+    <div class="topology" id="topology"></div>
+
+    <div class="monitor-label" style="margin-top:2rem">Cluster Health & Uptime</div>
+    <div class="clusters-detail" id="clusters"></div>
+
+    <div class="footer">Fleet Monitor — AKS Fleet Manager Demo Tool</div>
+
+    <script>
+    const CHECK_INTERVAL = {{ check_interval }} * 1000;
+
+    function envColor(env) {
+        const m = {dev:'var(--blue)', staging:'var(--yellow)', prod:'var(--red)'};
+        return m[env] || 'var(--muted)';
+    }
+    function envClass(env) { return env || 'unknown'; }
+    function uptimeClass(pct) { return pct >= 99.5 ? 'good' : pct >= 95 ? 'warn' : 'bad'; }
+
+    function renderSummary(data) {
+        const clusters = Object.values(data);
+        const up = clusters.filter(c => c.status === 'up').length;
+        const down = clusters.filter(c => c.status === 'down').length;
+        const avgLatency = clusters.length ? Math.round(clusters.reduce((s,c) => s + c.latency_ms, 0) / clusters.length) : 0;
+        const avgUptime = clusters.length ? (clusters.reduce((s,c) => s + c.uptime_pct, 0) / clusters.length).toFixed(1) : '0';
+        
+        document.getElementById('summary').innerHTML = `
+            <div class="summary-card"><div class="value" style="color:var(--green)">${up}</div><div class="label">Clusters Up</div></div>
+            <div class="summary-card"><div class="value" style="color:${down?'var(--red)':'var(--muted)'}">  ${down}</div><div class="label">Clusters Down</div></div>
+            <div class="summary-card"><div class="value">${avgLatency}ms</div><div class="label">Avg Latency</div></div>
+            <div class="summary-card"><div class="value" style="color:${avgUptime>=99.5?'var(--green)':'var(--yellow)'}">${avgUptime}%</div><div class="label">Fleet Uptime</div></div>
+            <div class="summary-card"><div class="value">${clusters.length}</div><div class="label">Total Members</div></div>
+        `;
+    }
+
+    function renderTopology(data) {
+        const clusters = Object.values(data).sort((a,b) => {
+            const order = {dev:0, staging:1, prod:2};
+            return (order[a.env]||9) - (order[b.env]||9);
+        });
+
+        let html = `<div class="topo-hub"><div class="label">Fleet Hub</div><div class="name">⎈ Fleet Manager</div></div>`;
+        
+        clusters.forEach(c => {
+            const arrow = c.status === 'up' ? 'active' : '';
+            html += `<div class="topo-arrow ${arrow}">${c.status==='up'?'⟶':'⟶'}</div>`;
+            html += `<div class="topo-node ${c.status}">
+                <div class="env-badge ${envClass(c.env)}">${c.env}</div>
+                <div class="cluster-name">${c.name}</div>
+                <div class="status-icon">${c.status==='up'?'✅':'❌'}</div>
+                <div class="latency">${c.latency_ms}ms</div>
+                <div class="version">K8s ${c.k8s_version}</div>
+            </div>`;
+        });
+
+        document.getElementById('topology').innerHTML = html;
+    }
+
+    function renderClusters(data) {
+        const clusters = Object.values(data).sort((a,b) => {
+            const order = {dev:0, staging:1, prod:2};
+            return (order[a.env]||9) - (order[b.env]||9);
+        });
+
+        let html = '';
+        clusters.forEach(c => {
+            const upClass = uptimeClass(c.uptime_pct);
+            const maxLatency = Math.max(...c.history.map(h => h.latency_ms), 1);
+
+            // Timeline bars
+            const timelineBars = c.history.slice(-120).map(h => 
+                `<div class="bar ${h.status}"></div>`
+            ).join('');
+
+            // Latency bars
+            const latencyBars = c.history.slice(-120).map(h => {
+                const pct = Math.min((h.latency_ms / maxLatency) * 100, 100);
+                return `<div class="bar" style="height:${Math.max(pct,5)}%"></div>`;
+            }).join('');
+
+            html += `<div class="cluster-card ${c.status}">
+                <h3>
+                    <span class="name"><span class="env-badge ${envClass(c.env)}" style="font-size:0.6rem;margin-right:6px">${c.env}</span>${c.name}</span>
+                    <span class="uptime ${upClass}">${c.uptime_pct}%</span>
+                </h3>
+                <div class="row"><span class="label">Status</span><span>${c.status==='up'?'🟢 Online':'🔴 Offline'}</span></div>
+                <div class="row"><span class="label">Latency</span><span>${c.latency_ms}ms</span></div>
+                <div class="row"><span class="label">K8s Version</span><span style="color:var(--purple)">${c.k8s_version}</span></div>
+                <div class="row"><span class="label">Node</span><span style="font-size:0.7rem">${c.node_name}</span></div>
+                <div class="row"><span class="label">Checks</span><span>✅ ${c.checks_ok} / ❌ ${c.checks_fail}</span></div>
+                <div style="margin-top:0.75rem;font-size:0.65rem;color:var(--muted);text-transform:uppercase">Uptime Timeline</div>
+                <div class="timeline">${timelineBars}</div>
+                <div style="margin-top:0.5rem;font-size:0.65rem;color:var(--muted);text-transform:uppercase">Latency (${maxLatency}ms max)</div>
+                <div class="latency-chart">${latencyBars}</div>
+            </div>`;
+        });
+
+        document.getElementById('clusters').innerHTML = html;
+    }
+
+    async function refresh() {
+        try {
+            const resp = await fetch('/api/status');
+            const data = await resp.json();
+            renderSummary(data);
+            renderTopology(data);
+            renderClusters(data);
+        } catch(e) {
+            console.error('Refresh failed:', e);
+        }
+    }
+
+    refresh();
+    setInterval(refresh, CHECK_INTERVAL);
+    </script>
+</body>
+</html>
